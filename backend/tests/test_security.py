@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from backend.app.crypto import decrypt_value, encrypt_value
 from backend.app.repository_access import (
     RuntimeRepository,
@@ -105,3 +107,11 @@ def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
     assert options[-1].startswith("sftp.command=ssh ")
     assert "-p 2222 -l backup-user -s backup.example sftp" in options[-1]
     assert "," not in options[-1]
+
+
+def test_entrypoint_does_not_recursively_chown_private_restic_cache():
+    entrypoint = Path("scripts/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "chown -R rrb:rrb /data\n" not in entrypoint
+    assert "chown rrb:rrb /data /data/cache" in entrypoint
+    assert "chown -R rrb:rrb /data/security" in entrypoint

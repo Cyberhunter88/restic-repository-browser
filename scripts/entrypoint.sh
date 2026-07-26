@@ -2,7 +2,12 @@
 set -eu
 
 mkdir -p /data/security /data/cache /repositories
-chown -R rrb:rrb /data
+# Restic creates private cache directories (0700) owned by rrb. The
+# capability-restricted root process cannot traverse them and does not need to:
+# cache contents are already created and consumed by rrb.
+chown rrb:rrb /data /data/cache
+chown -R rrb:rrb /data/security
+find /data -maxdepth 1 -type f -exec chown rrb:rrb {} +
 
 gosu rrb python -m backend.app.bootstrap
 
@@ -27,4 +32,3 @@ if [ "${RRB_TLS_MODE:-proxy}" = "files" ]; then
 fi
 
 exec gosu rrb "$@"
-
