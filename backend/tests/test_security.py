@@ -77,7 +77,12 @@ def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
         id="sftp-password",
         kind="sftp",
         location="sftp://backup-user@backup.example:22//srv/restic/repo",
-        config={"auth_method": "password"},
+        config={
+            "auth_method": "password",
+            "host": "backup.example",
+            "port": 2222,
+            "username": "backup-user",
+        },
         secrets={
             "repository_password": "repository-password",
             "sftp_password": password,
@@ -93,5 +98,5 @@ def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
     assert password not in (tmp_path / "sftp-askpass").read_text(encoding="utf-8")
     assert env["SSH_ASKPASS"] == str(tmp_path / "sftp-askpass")
     assert "PubkeyAuthentication=no" in options[-1]
-    assert options[-1].startswith("sftp.args=")
-    assert "sftp.command=" not in repr(options)
+    assert options[-1].startswith("sftp.command=ssh ")
+    assert "-p 2222 -l backup-user -- backup.example -s sftp" in options[-1]

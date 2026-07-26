@@ -74,6 +74,11 @@ def _materialize(
             f"-o UserKnownHostsFile={shlex.quote(str(known_hosts_path))} "
             "-o StrictHostKeyChecking=yes"
         )
+        ssh_target = (
+            f"-p {int(repository.config['port'])} "
+            f"-l {shlex.quote(str(repository.config['username']))} -- "
+            f"{shlex.quote(str(repository.config['host']))} -s sftp"
+        )
         if repository.config.get("auth_method", "private_key") == "password":
             sftp_password_path = directory / "sftp-password"
             askpass_path = directory / "sftp-askpass"
@@ -106,7 +111,7 @@ def _materialize(
                 f"{host_key_options} -o BatchMode=yes "
                 "-o PreferredAuthentications=publickey"
             )
-        options.extend(["-o", f"sftp.args={ssh_args}"])
+        options.extend(["-o", f"sftp.command=ssh {ssh_args} {ssh_target}"])
     elif repository.kind == "s3":
         env["AWS_ACCESS_KEY_ID"] = secrets["s3_access_key_id"]
         env["AWS_SECRET_ACCESS_KEY"] = secrets["s3_secret_access_key"]
