@@ -91,6 +91,37 @@ def test_create_and_delete_local_repository(authenticated_client, monkeypatch, t
         ).all()
 
 
+def test_snapshots_accept_sqlite_naive_refresh_timestamp(
+    authenticated_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(main, "validate_runtime", AsyncMock(return_value=[]))
+    response = authenticated_client.post(
+        "/api/repositories",
+        json={
+            "name": "SQLite Timestamp Repository",
+            "kind": "local",
+            "repository_password": "secret-repository-password",
+            "local_path": "sqlite-timestamp-test",
+        },
+        headers=MUTATION_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+
+    repository_id = response.json()["id"]
+    snapshots = authenticated_client.get(
+        f"/api/repositories/{repository_id}/snapshots"
+    )
+    assert snapshots.status_code == 200
+    assert snapshots.json() == []
+
+    deleted = authenticated_client.delete(
+        f"/api/repositories/{repository_id}",
+        headers=MUTATION_HEADERS,
+    )
+    assert deleted.status_code == 204
+
+
 def test_create_sftp_repository_with_password(authenticated_client, monkeypatch):
     monkeypatch.setattr(main, "validate_runtime", AsyncMock(return_value=[]))
     known_host = (

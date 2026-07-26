@@ -45,6 +45,7 @@ from .schemas import (
     UserOut,
 )
 from .security import (
+    as_utc,
     check_rate_limit,
     create_session,
     current_user,
@@ -536,7 +537,7 @@ def repository_snapshots(
         raise HTTPException(404, "Repository nicht gefunden")
     stale = (
         not repository.last_snapshot_refresh_at
-        or repository.last_snapshot_refresh_at
+        or as_utc(repository.last_snapshot_refresh_at)
         < datetime.now(timezone.utc) - timedelta(seconds=settings.snapshot_cache_seconds)
     )
     if stale:
