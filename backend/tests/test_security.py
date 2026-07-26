@@ -6,6 +6,7 @@ from backend.app.repository_access import (
     fingerprint_known_host,
     normalize_https,
     normalize_local_path,
+    normalize_sftp,
 )
 from backend.app.restic import _materialize
 from backend.app.security import hash_password, verify_password
@@ -53,12 +54,29 @@ def test_ssh_fingerprint_is_sha256():
     assert "=" not in fingerprint
 
 
+def test_sftp_location_uses_url_syntax_for_port_and_absolute_path():
+    location, config = normalize_sftp(
+        "BACKUP.EXAMPLE",
+        2222,
+        "backup-user",
+        "/srv/restic repo",
+    )
+
+    assert location == "sftp://backup-user@backup.example:2222//srv/restic%20repo"
+    assert config == {
+        "host": "backup.example",
+        "port": 2222,
+        "username": "backup-user",
+        "path": "/srv/restic repo",
+    }
+
+
 def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
     password = "secret-sftp-password"
     runtime = RuntimeRepository(
         id="sftp-password",
         kind="sftp",
-        location="sftp:backup-user@backup.example:22//srv/restic/repo",
+        location="sftp://backup-user@backup.example:22//srv/restic/repo",
         config={"auth_method": "password"},
         secrets={
             "repository_password": "repository-password",

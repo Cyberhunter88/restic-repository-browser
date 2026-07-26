@@ -111,6 +111,7 @@ def test_create_sftp_repository_with_password(authenticated_client, monkeypatch)
     with SessionLocal() as db:
         repository = db.get(Repository, repository_id)
         assert repository is not None
+        assert repository.location == "sftp://backup-user@backup.example:22//srv/restic/repo"
         secrets = get_repository_secrets(db, repository_id)
         assert secrets["sftp_password"] == "secret-sftp-password"
         assert "sftp_private_key" not in secrets

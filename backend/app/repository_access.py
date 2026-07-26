@@ -77,7 +77,7 @@ def normalize_sftp(host: str, port: int, username: str, path: str) -> tuple[str,
     if not path.startswith("/"):
         raise ValueError("SFTP-Pfad muss absolut sein")
     display_host = f"[{host}]" if ":" in host else host
-    location = f"sftp:{username}@{display_host}:{port}/{quote(path, safe='/')}"
+    location = f"sftp://{username}@{display_host}:{port}/{quote(path, safe='/')}"
     return location, {"host": host, "port": port, "username": username, "path": path}
 
 
