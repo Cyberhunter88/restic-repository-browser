@@ -93,3 +93,5 @@ def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
     assert password not in (tmp_path / "sftp-askpass").read_text(encoding="utf-8")
     assert env["SSH_ASKPASS"] == str(tmp_path / "sftp-askpass")
     assert "PubkeyAuthentication=no" in options[-1]
+    assert options[-1].startswith("sftp.args=")
+    assert "sftp.command=" not in repr(options)

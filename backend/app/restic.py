@@ -92,8 +92,8 @@ def _materialize(
                     "DISPLAY": "rrb:0",
                 }
             )
-            ssh_command = (
-                f"ssh {host_key_options} -o PubkeyAuthentication=no "
+            ssh_args = (
+                f"{host_key_options} -o PubkeyAuthentication=no "
                 "-o PreferredAuthentications=password,keyboard-interactive "
                 "-o NumberOfPasswordPrompts=1"
             )
@@ -101,12 +101,12 @@ def _materialize(
             key_path = directory / "sftp-key"
             key_path.write_text(secrets["sftp_private_key"], encoding="utf-8")
             key_path.chmod(0o600)
-            ssh_command = (
-                f"ssh -i {shlex.quote(str(key_path))} -o IdentitiesOnly=yes "
+            ssh_args = (
+                f"-i {shlex.quote(str(key_path))} -o IdentitiesOnly=yes "
                 f"{host_key_options} -o BatchMode=yes "
                 "-o PreferredAuthentications=publickey"
             )
-        options.extend(["-o", f"sftp.command={ssh_command}"])
+        options.extend(["-o", f"sftp.args={ssh_args}"])
     elif repository.kind == "s3":
         env["AWS_ACCESS_KEY_ID"] = secrets["s3_access_key_id"]
         env["AWS_SECRET_ACCESS_KEY"] = secrets["s3_secret_access_key"]
