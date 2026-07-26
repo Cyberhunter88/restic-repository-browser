@@ -22,7 +22,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Needed only while the entrypoint prepares /data and switches to rrb.
     cap_add:
       - CHOWN
+      - SETGID
+      - SETUID
     pids_limit: 128
-
