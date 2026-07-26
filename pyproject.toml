@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "restic-repository-browser"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read-only web browser for Restic repositories"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -36,4 +36,3 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 110
 target-version = "py312"
-

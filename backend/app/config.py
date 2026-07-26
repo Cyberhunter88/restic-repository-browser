@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     session_idle_seconds: int = Field(default=3600, ge=300, le=86400)
     snapshot_cache_seconds: int = Field(default=300, ge=30, le=86400)
     max_parallel_restic: int = Field(default=2, ge=1, le=16)
+    login_retention_days: int = Field(default=30, ge=1, le=3650)
+    job_retention_days: int = Field(default=30, ge=1, le=3650)
+    audit_retention_days: int = Field(default=90, ge=1, le=3650)
+    refresh_job_lease_seconds: int = Field(default=60, ge=15, le=3600)
+    worker_poll_seconds: float = Field(default=1.0, ge=0.1, le=60)
+    allowed_remote_targets: str = ""
 
     @property
     def db_url(self) -> str:
@@ -58,4 +64,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

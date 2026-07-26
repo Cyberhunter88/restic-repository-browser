@@ -114,8 +114,64 @@ class RefreshJob(Base):
         ForeignKey("repositories.id", ondelete="CASCADE"), index=True
     )
     status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    requested_by: Mapped[str] = mapped_column(String(100), default="system")
+    active_key: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, unique=True
+    )
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+
+class DirectoryListing(Base):
+    __tablename__ = "directory_listings"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "path", name="uq_directory_listing"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(Text)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CachedEntry(Base):
+    __tablename__ = "cached_entries"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "path", name="uq_cached_entry"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    listing_id: Mapped[str] = mapped_column(
+        ForeignKey("directory_listings.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    type: Mapped[str] = mapped_column(String(30), index=True)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    mode_json: Mapped[str] = mapped_column(Text, default="null")
+    mtime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    uid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    linktarget: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_name: Mapped[str] = mapped_column(String(100), default="")
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    result: Mapped[str] = mapped_column(String(20), index=True)
+    repository_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

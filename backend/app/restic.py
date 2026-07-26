@@ -167,12 +167,16 @@ async def run_command(
             stderr=asyncio.subprocess.PIPE,
             env=minimal_environment(env_values),
             start_new_session=os.name == "posix",
+            limit=1_048_576,
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except TimeoutError:
             await _terminate_process(process)
             raise RuntimeError("Restic-Aufruf hat das Zeitlimit überschritten")
+        except asyncio.CancelledError:
+            await _terminate_process(process)
+            raise
         return CommandResult(
             process.returncode,
             stdout.decode(errors="replace"),
@@ -206,21 +210,69 @@ async def list_entries(
     snapshot_id: str,
     path: str,
 ) -> list[dict]:
-    result = await run_command(
-        repository,
-        ["ls", "--json", "--no-lock", snapshot_id, path],
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or "Snapshot konnte nicht gelesen werden")
-    items: list[dict] = []
-    for line in result.stdout.splitlines():
+    return [item async for item in iter_entries(repository, snapshot_id, path)]
+
+
+async def iter_entries(
+    repository: RuntimeRepository,
+    snapshot_id: str,
+    path: str,
+    *,
+    timeout: int = 300,
+) -> AsyncIterator[dict]:
+    with tempfile.TemporaryDirectory(prefix="rrb-list-") as raw:
+        directory = Path(raw)
+        env_values, options = _materialize(directory, repository)
+        process = await asyncio.create_subprocess_exec(
+            "restic",
+            *options,
+            "ls",
+            "--json",
+            "--no-lock",
+            snapshot_id,
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=minimal_environment(env_values),
+            start_new_session=os.name == "posix",
+            limit=1_048_576,
+        )
+
+        async def drain_stderr() -> str:
+            collected = bytearray()
+            while chunk := await process.stderr.read(65536):
+                if len(collected) < 200_000:
+                    collected.extend(chunk[: 200_000 - len(collected)])
+            return redact_text(collected.decode(errors="replace").strip(), repository.secrets)
+
+        error_task = asyncio.create_task(drain_stderr())
         try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict) and item.get("struct_type") == "node":
-            items.append(item)
-    return items
+            async with asyncio.timeout(timeout):
+                while line := await process.stdout.readline():
+                    if len(line) > 1_048_576:
+                        raise RuntimeError("Restic hat einen zu großen Verzeichniseintrag geliefert")
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, dict) and item.get("struct_type") == "node":
+                        yield item
+                returncode = await process.wait()
+            error = await error_task
+            if returncode != 0:
+                raise RuntimeError(error or "Snapshot konnte nicht gelesen werden")
+        except TimeoutError as exc:
+            await _terminate_process(process)
+            raise RuntimeError("Restic-Aufruf hat das Zeitlimit überschritten") from exc
+        except (asyncio.CancelledError, GeneratorExit):
+            await _terminate_process(process)
+            raise
+        finally:
+            if process.returncode is None:
+                await _terminate_process(process)
+            if not error_task.done():
+                error_task.cancel()
+            await asyncio.gather(error_task, return_exceptions=True)
 
 
 async def stream_dump(
@@ -249,8 +301,11 @@ async def stream_dump(
         )
 
         async def read_stderr() -> str:
-            data = await process.stderr.read(200_000)
-            return redact_text(data.decode(errors="replace"), repository.secrets)
+            collected = bytearray()
+            while chunk := await process.stderr.read(65536):
+                if len(collected) < 200_000:
+                    collected.extend(chunk[: 200_000 - len(collected)])
+            return redact_text(collected.decode(errors="replace"), repository.secrets)
 
         error_task = asyncio.create_task(read_stderr())
         try:

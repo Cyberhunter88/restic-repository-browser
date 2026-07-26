@@ -1,6 +1,8 @@
-import {FormEvent, useEffect, useMemo, useState} from 'react'
-import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {FormEvent, useEffect, useMemo, useRef, useState} from 'react'
+import {useInfiniteQuery, useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useVirtualizer} from '@tanstack/react-virtual'
 import {
+  Activity,
   AlertTriangle,
   Archive,
   ArrowLeft,
@@ -16,6 +18,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
+  PauseCircle,
   Plus,
   Pencil,
   RefreshCw,
@@ -29,12 +32,15 @@ import {
 import {Link, Navigate, Route, Routes, useNavigate, useParams} from 'react-router-dom'
 import {api, ApiError, downloadUrl, formatBytes, formatDate, mutate} from './api'
 import type {
+  AuditEvent,
+  Page,
   RefreshJob,
   RepositoryKind,
   RepositorySummary,
   SftpHostKey,
   SnapshotEntry,
   SnapshotSummary,
+  SystemStatus,
   User,
 } from './types'
 
@@ -209,7 +215,7 @@ function Shell({user}: {user: User}) {
         </nav>
         <div className="account">
           <span className="avatar">{user.username.slice(0, 1).toUpperCase()}</span>
-          <button className="icon-button" title="Abmelden" onClick={() => logout.mutate()}>
+          <button className="icon-button" aria-label="Abmelden" title="Abmelden" onClick={() => logout.mutate()}>
             <LogOut size={18} />
           </button>
         </div>
@@ -270,6 +276,14 @@ function RepositoryCard({repository}: {repository: RepositorySummary}) {
     mutationFn: () => mutate<void>(`/repositories/${repository.id}`, 'DELETE'),
     onSuccess: () => queryClient.invalidateQueries({queryKey: ['repositories']}),
   })
+  const state = useMutation({
+    mutationFn: () => mutate<RepositorySummary>(
+      `/repositories/${repository.id}/state`,
+      'PATCH',
+      {enabled: !repository.enabled},
+    ),
+    onSuccess: () => queryClient.invalidateQueries({queryKey: ['repositories']}),
+  })
   const doDelete = () => {
     if (window.confirm(`„${repository.name}“ aus dem Browser entfernen? Das Restic-Repository bleibt unverändert.`)) {
       remove.mutate()
@@ -280,8 +294,8 @@ function RepositoryCard({repository}: {repository: RepositorySummary}) {
     <article className="repository-card">
       <div className="card-top">
         <span className={`kind-icon ${repository.kind}`}><Server size={22} /></span>
-        <span className={`status-pill ${repository.last_error ? 'failed' : 'healthy'}`}>
-          <span /> {repository.last_error ? 'Fehler' : 'Bereit'}
+        <span className={`status-pill ${!repository.enabled ? 'disabled' : repository.last_error ? 'failed' : 'healthy'}`}>
+          <span /> {!repository.enabled ? 'Deaktiviert' : repository.last_error ? 'Fehler' : 'Bereit'}
         </span>
       </div>
       <div>
@@ -298,10 +312,25 @@ function RepositoryCard({repository}: {repository: RepositorySummary}) {
         <Link className="secondary grow" to={`/repositories/${repository.id}`}>
           Öffnen <ChevronRight size={17} />
         </Link>
-        <button className="icon-button outlined" title="Verbindung bearbeiten" onClick={() => setShowEdit(true)}>
+        <button className="icon-button outlined" aria-label="Verbindung bearbeiten" title="Verbindung bearbeiten" onClick={() => setShowEdit(true)}>
           <Pencil size={17} />
         </button>
-        <button className="danger-icon" title="Verbindung entfernen" onClick={doDelete} disabled={remove.isPending}>
+        <button
+          className="icon-button outlined"
+          aria-label={repository.enabled ? 'Repository deaktivieren' : 'Repository aktivieren'}
+          title={repository.enabled ? 'Repository deaktivieren' : 'Repository aktivieren'}
+          onClick={() => {
+            if (window.confirm(
+              repository.enabled
+                ? `„${repository.name}“ deaktivieren? Gecachte Snapshots bleiben sichtbar.`
+                : `„${repository.name}“ wieder aktivieren?`,
+            )) state.mutate()
+          }}
+          disabled={state.isPending}
+        >
+          {repository.enabled ? <PauseCircle size={17} /> : <Check size={17} />}
+        </button>
+        <button className="danger-icon" aria-label="Verbindung entfernen" title="Verbindung entfernen" onClick={doDelete} disabled={remove.isPending}>
           <Trash2 size={17} />
         </button>
       </div>
@@ -318,7 +347,41 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
   const [keys, setKeys] = useState<SftpHostKey[]>([])
   const [selectedKey, setSelectedKey] = useState<SftpHostKey>()
   const [confirmed, setConfirmed] = useState(false)
+  const dialogRef = useRef<HTMLElement>(null)
   const queryClient = useQueryClient()
+  const requiresNewSecrets = !existing || existing.kind !== kind
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    const focusable = () => [...(dialog?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]',
+    ) ?? [])]
+    focusable()[0]?.focus()
+    const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const items = focusable()
+      if (!items.length) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('keydown', handleKey)
+      previous?.focus()
+    }
+  }, [onClose])
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       mutate<RepositorySummary>(
@@ -352,11 +415,16 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    if (kind === 'sftp' && (!selectedKey || !confirmed)) return
+    if (kind === 'sftp' && requiresNewSecrets && (!selectedKey || !confirmed)) return
     const string = (name: string) => {
       const value = String(form.get(name) ?? '').trim()
       return value || undefined
     }
+    const clearSecrets = [
+      form.get('clear_rest_password') ? 'rest_password' : '',
+      form.get('clear_ca_certificate') ? 'ca_certificate' : '',
+      form.get('clear_s3_session_token') ? 's3_session_token' : '',
+    ].filter(Boolean)
     save.mutate({
       name: string('name'),
       kind,
@@ -382,12 +450,13 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
       s3_access_key_id: string('s3_access_key_id'),
       s3_secret_access_key: string('s3_secret_access_key'),
       s3_session_token: string('s3_session_token'),
+      clear_secrets: clearSecrets,
     })
   }
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-title">
+      <section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="connect-title">
         <div className="modal-header">
           <div>
             <p className="eyebrow">{existing ? 'VERBINDUNG ÄNDERN' : 'NEUE VERBINDUNG'}</p>
@@ -418,7 +487,8 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
             </label>
             <label>
               Restic-Repository-Passwort
-              <input name="repository_password" type="password" required autoComplete="new-password" />
+              <input name="repository_password" type="password" required={requiresNewSecrets} autoComplete="new-password" />
+              {existing && !requiresNewSecrets && <small>Leer lassen, um das gespeicherte Passwort beizubehalten.</small>}
             </label>
             {kind === 'local' && (
               <label className="full">
@@ -440,11 +510,18 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
                 <label>
                   REST-Passwort
                   <input name="rest_password" type="password" autoComplete="new-password" />
+                  {existing?.kind === 'rest' && <small>Leer lassen = gespeicherten Wert behalten.</small>}
                 </label>
                 <label className="full">
                   Eigene CA (optional)
                   <textarea name="ca_certificate" rows={4} placeholder="-----BEGIN CERTIFICATE-----" />
+                  {existing?.kind === 'rest' && (
+                    <small className="inline-check"><input name="clear_ca_certificate" type="checkbox" /> Gespeicherte CA entfernen</small>
+                  )}
                 </label>
+                {existing?.kind === 'rest' && (
+                  <label className="full inline-check"><input name="clear_rest_password" type="checkbox" /> Gespeichertes REST-Passwort entfernen</label>
+                )}
               </>
             )}
             {kind === 'sftp' && (
@@ -482,7 +559,7 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
                     <textarea
                       name="sftp_private_key"
                       rows={5}
-                      required
+                      required={requiresNewSecrets || existing?.config.auth_method !== sftpAuthMethod}
                       autoComplete="off"
                       placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                     />
@@ -490,7 +567,7 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
                 ) : (
                   <label className="full">
                     SFTP-Passwort
-                    <input name="sftp_password" type="password" required autoComplete="new-password" />
+                    <input name="sftp_password" type="password" required={requiresNewSecrets || existing?.config.auth_method !== sftpAuthMethod} autoComplete="new-password" />
                     <small>Wird verschlüsselt gespeichert und nicht als Kommandozeilenargument übergeben.</small>
                   </label>
                 )}
@@ -551,15 +628,18 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
                 <span />
                 <label>
                   Access Key ID
-                  <input name="s3_access_key_id" type="password" required autoComplete="new-password" />
+                  <input name="s3_access_key_id" type="password" required={requiresNewSecrets} autoComplete="new-password" />
                 </label>
                 <label>
                   Secret Access Key
-                  <input name="s3_secret_access_key" type="password" required autoComplete="new-password" />
+                  <input name="s3_secret_access_key" type="password" required={requiresNewSecrets} autoComplete="new-password" />
                 </label>
                 <label className="full">
                   Session Token (optional)
                   <input name="s3_session_token" type="password" autoComplete="new-password" />
+                  {existing?.kind === 's3' && (
+                    <small className="inline-check"><input name="clear_s3_session_token" type="checkbox" /> Gespeichertes Token entfernen</small>
+                  )}
                 </label>
               </>
             )}
@@ -567,7 +647,7 @@ function RepositoryDialog({onClose, existing}: {onClose: () => void; existing?: 
           <ErrorMessage error={save.error} />
           <div className="modal-actions">
             <button type="button" className="ghost" onClick={onClose}>Abbrechen</button>
-            <button className="primary" disabled={save.isPending || (kind === 'sftp' && !confirmed)}>
+            <button className="primary" disabled={save.isPending || (kind === 'sftp' && requiresNewSecrets && !confirmed)}>
               {save.isPending ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />}
               Verbindung testen & speichern
             </button>
@@ -591,9 +671,19 @@ function RepositoryDetailPage() {
     queryKey: ['repositories'],
     queryFn: () => api<RepositorySummary[]>('/repositories'),
   })
-  const snapshots = useQuery({
-    queryKey: ['snapshots', repositoryId],
-    queryFn: () => api<SnapshotSummary[]>(`/repositories/${repositoryId}/snapshots`),
+  const snapshots = useInfiniteQuery({
+    queryKey: ['snapshots-page', repositoryId, search, host, tag, date],
+    initialPageParam: '',
+    queryFn: ({pageParam}) => {
+      const query = new URLSearchParams({limit: '50'})
+      if (pageParam) query.set('cursor', pageParam)
+      if (search) query.set('q', search)
+      if (host) query.set('host', host)
+      if (tag) query.set('tag', tag)
+      if (date) query.set('date', date)
+      return api<Page<SnapshotSummary>>(`/repositories/${repositoryId}/snapshots/page?${query}`)
+    },
+    getNextPageParam: page => page.next_cursor,
   })
   const refresh = useMutation({
     mutationFn: () => mutate<RefreshJob>(`/repositories/${repositoryId}/refresh`, 'POST'),
@@ -610,26 +700,30 @@ function RepositoryDetailPage() {
   })
   useEffect(() => {
     if (job.data?.status === 'success') {
-      queryClient.invalidateQueries({queryKey: ['snapshots', repositoryId]})
+      queryClient.invalidateQueries({queryKey: ['snapshots-page', repositoryId]})
       queryClient.invalidateQueries({queryKey: ['repositories']})
     }
   }, [job.data?.status, queryClient, repositoryId])
+  useEffect(() => setSelected(undefined), [search, host, tag, date])
 
   const repository = repositories.data?.find(item => item.id === repositoryId)
-  const hosts = [...new Set(snapshots.data?.map(item => item.hostname).filter(Boolean) ?? [])].sort()
-  const tags = [...new Set(snapshots.data?.flatMap(item => item.tags) ?? [])].sort()
-  const filtered = useMemo(() => {
-    const term = search.toLowerCase()
-    return snapshots.data?.filter(item => (
-      (!host || item.hostname === host)
-      && (!tag || item.tags.includes(tag))
-      && (!date || item.time.slice(0, 10) === date)
-      && (!term || `${item.short_id} ${item.hostname} ${item.paths.join(' ')} ${item.tags.join(' ')}`.toLowerCase().includes(term))
-    )) ?? []
-  }, [snapshots.data, search, host, tag, date])
+  const snapshotItems = useMemo(
+    () => snapshots.data?.pages.flatMap(page => page.items) ?? [],
+    [snapshots.data],
+  )
+  const hosts = [...new Set(snapshotItems.map(item => item.hostname).filter(Boolean))].sort()
+  const tags = [...new Set(snapshotItems.flatMap(item => item.tags))].sort()
+  const snapshotScrollRef = useRef<HTMLDivElement>(null)
+  const snapshotVirtualizer = useVirtualizer({
+    count: snapshotItems.length,
+    getScrollElement: () => snapshotScrollRef.current,
+    estimateSize: () => 96,
+    overscan: 6,
+  })
 
   if (repositories.isLoading) return <main className="page"><Loading /></main>
   if (!repository) return <Navigate to="/" replace />
+  const refreshing = job.data?.status === 'queued' || job.data?.status === 'running'
 
   return (
     <main className="page detail-page">
@@ -642,29 +736,30 @@ function RepositoryDetailPage() {
             <p className="location">{repository.location_display}</p>
           </div>
         </div>
-        <button className="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending || job.data?.status === 'running'}>
-          <RefreshCw className={job.data?.status === 'running' ? 'spin' : ''} size={17} />
+        <button className="secondary" onClick={() => refresh.mutate()} disabled={!repository.enabled || refresh.isPending || refreshing}>
+          <RefreshCw className={refreshing ? 'spin' : ''} size={17} />
           Jetzt aktualisieren
         </button>
       </div>
+      {!repository.enabled && (
+        <div className="notice-message" role="status">
+          <PauseCircle size={18} /> Das Repository ist deaktiviert. Gecachte Snapshot-Metadaten bleiben sichtbar.
+        </div>
+      )}
       <ErrorMessage error={snapshots.error || refresh.error || (job.data?.status === 'failed' ? new Error(job.data.error) : null)} />
       <div className="browser-layout">
         <aside className="snapshot-panel">
           <div className="panel-title">
             <div><p className="eyebrow">VERLAUF</p><h2>Snapshots</h2></div>
-            <span className="count-badge">{filtered.length}</span>
+            <span className="count-badge">{snapshotItems.length}</span>
           </div>
           <div className="filters">
             <label className="search-field"><Search size={16} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Suchen …" /></label>
             <div className="filter-row">
-              <select value={host} onChange={event => setHost(event.target.value)}>
-                <option value="">Alle Hosts</option>
-                {hosts.map(value => <option key={value}>{value}</option>)}
-              </select>
-              <select value={tag} onChange={event => setTag(event.target.value)}>
-                <option value="">Alle Tags</option>
-                {tags.map(value => <option key={value}>{value}</option>)}
-              </select>
+              <input list="snapshot-hosts" value={host} onChange={event => setHost(event.target.value)} placeholder="Alle Hosts" aria-label="Hostfilter" />
+              <datalist id="snapshot-hosts">{hosts.map(value => <option key={value} value={value} />)}</datalist>
+              <input list="snapshot-tags" value={tag} onChange={event => setTag(event.target.value)} placeholder="Alle Tags" aria-label="Tagfilter" />
+              <datalist id="snapshot-tags">{tags.map(value => <option key={value} value={value} />)}</datalist>
             </div>
             <input
               aria-label="Snapshot-Datum"
@@ -674,20 +769,48 @@ function RepositoryDetailPage() {
             />
           </div>
           {snapshots.isLoading && <Loading label="Snapshots werden geladen …" />}
-          <div className="snapshot-list">
-            {filtered.map(snapshot => (
-              <button key={snapshot.id} className={selected?.id === snapshot.id ? 'selected' : ''} onClick={() => setSelected(snapshot)}>
-                <span className="snapshot-date">{formatDate(snapshot.time)}</span>
-                <strong>{snapshot.hostname || 'Ohne Hostname'}</strong>
-                <small>{snapshot.short_id} · {snapshot.paths.length} Pfad{snapshot.paths.length === 1 ? '' : 'e'}</small>
-                {snapshot.tags.length > 0 && <span className="tag-row">{snapshot.tags.slice(0, 3).map(value => <em key={value}>{value}</em>)}</span>}
-              </button>
-            ))}
+          <div ref={snapshotScrollRef} className="snapshot-list" role="listbox" aria-label="Snapshots">
+            <div className="virtual-content" style={{height: snapshotVirtualizer.getTotalSize()}}>
+              {snapshotVirtualizer.getVirtualItems().map(virtualRow => {
+                const snapshot = snapshotItems[virtualRow.index]
+                return (
+                  <button
+                    key={snapshot.id}
+                    ref={snapshotVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    role="option"
+                    aria-selected={selected?.id === snapshot.id}
+                    className={`snapshot-item ${selected?.id === snapshot.id ? 'selected' : ''}`}
+                    style={{transform: `translateY(${virtualRow.start}px)`}}
+                    onClick={() => setSelected(snapshot)}
+                    onKeyDown={event => {
+                      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+                      event.preventDefault()
+                      const buttons = snapshotScrollRef.current?.querySelectorAll<HTMLButtonElement>('.snapshot-item')
+                      const index = [...(buttons ?? [])].indexOf(event.currentTarget)
+                      buttons?.[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus()
+                    }}
+                  >
+                    <span className="snapshot-date">{formatDate(snapshot.time)}</span>
+                    <strong>{snapshot.hostname || 'Ohne Hostname'}</strong>
+                    <small>{snapshot.short_id} · {snapshot.paths.length} Pfad{snapshot.paths.length === 1 ? '' : 'e'}</small>
+                    {snapshot.tags.length > 0 && <span className="tag-row">{snapshot.tags.slice(0, 3).map(value => <em key={value}>{value}</em>)}</span>}
+                  </button>
+                )
+              })}
+            </div>
           </div>
+          {snapshots.hasNextPage && (
+            <button className="ghost load-more" onClick={() => snapshots.fetchNextPage()} disabled={snapshots.isFetchingNextPage}>
+              {snapshots.isFetchingNextPage ? 'Wird geladen …' : 'Weitere Snapshots'}
+            </button>
+          )}
         </aside>
         <section className="file-panel">
-          {selected ? (
+          {selected && repository.enabled ? (
             <FileBrowser snapshot={selected} />
+          ) : selected ? (
+            <div className="empty-browser"><PauseCircle size={42} /><h2>Repository deaktiviert</h2><p>Aktiviere es, um Verzeichnisse zu lesen oder Dateien herunterzuladen.</p></div>
           ) : (
             <div className="empty-browser">
               <FolderOpen size={42} />
@@ -704,9 +827,26 @@ function RepositoryDetailPage() {
 function FileBrowser({snapshot}: {snapshot: SnapshotSummary}) {
   const [path, setPath] = useState('/')
   useEffect(() => setPath('/'), [snapshot.id])
-  const query = useQuery({
-    queryKey: ['entries', snapshot.id, path],
-    queryFn: () => api<SnapshotEntry[]>(`/snapshots/${snapshot.id}/entries?path=${encodeURIComponent(path)}`),
+  const query = useInfiniteQuery({
+    queryKey: ['entries-page', snapshot.id, path],
+    initialPageParam: '',
+    queryFn: ({pageParam}) => {
+      const params = new URLSearchParams({path, limit: '100'})
+      if (pageParam) params.set('cursor', pageParam)
+      return api<Page<SnapshotEntry>>(`/snapshots/${snapshot.id}/entries/page?${params}`)
+    },
+    getNextPageParam: page => page.next_cursor,
+  })
+  const entries = useMemo(
+    () => query.data?.pages.flatMap(page => page.items) ?? [],
+    [query.data],
+  )
+  const fileScrollRef = useRef<HTMLDivElement>(null)
+  const fileVirtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => fileScrollRef.current,
+    estimateSize: () => 54,
+    overscan: 10,
   })
   const parts = path.split('/').filter(Boolean)
   const crumbs = [{name: 'Wurzel', path: '/'}]
@@ -732,37 +872,71 @@ function FileBrowser({snapshot}: {snapshot: SnapshotSummary}) {
       </div>
       {query.isLoading && <Loading label="Ordner wird gelesen …" />}
       <ErrorMessage error={query.error} />
-      {!query.isLoading && query.data?.length === 0 && (
+      {!query.isLoading && entries.length === 0 && (
         <div className="empty-folder"><Folder size={28} /><p>Dieser Ordner ist leer.</p></div>
       )}
       <div className="file-table" role="table">
         <div className="file-row header" role="row">
-          <span>Name</span><span>Größe</span><span>Geändert</span><span />
+          <span role="columnheader">Name</span><span role="columnheader">Größe</span><span role="columnheader">Geändert</span><span role="columnheader">Aktion</span>
         </div>
-        {query.data?.map(entry => {
-          const directory = entry.type === 'dir'
-          return (
-            <div className="file-row" role="row" key={entry.path}>
-              <button className="file-name" disabled={!directory} onClick={() => directory && setPath(entry.path)}>
-                {directory ? <Folder size={19} /> : <File size={19} />}
-                <span><strong>{entry.name}</strong>{entry.linktarget && <small>→ {entry.linktarget}</small>}</span>
-              </button>
-              <span>{directory ? '—' : formatBytes(entry.size)}</span>
-              <span>{formatDate(entry.mtime)}</span>
-              {(directory || entry.type === 'file') ? (
-                <a className="download-button" title={directory ? 'Ordner als ZIP' : 'Datei herunterladen'} href={downloadUrl(snapshot.id, entry.path, directory)}>
-                  {directory ? <Archive size={17} /> : <Download size={17} />}
-                </a>
-              ) : <span />}
-            </div>
-          )
-        })}
+        <div ref={fileScrollRef} className="file-scroll">
+          <div className="virtual-content" style={{height: fileVirtualizer.getTotalSize()}}>
+            {fileVirtualizer.getVirtualItems().map(virtualRow => {
+              const entry = entries[virtualRow.index]
+              const directory = entry.type === 'dir'
+              const name = <><span aria-hidden="true">{directory ? <Folder size={19} /> : <File size={19} />}</span><span><strong>{entry.name}</strong>{entry.linktarget && <small>→ {entry.linktarget}</small>}</span></>
+              return (
+                <div
+                  className="file-row virtual-row"
+                  role="row"
+                  key={entry.path}
+                  ref={fileVirtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  style={{transform: `translateY(${virtualRow.start}px)`}}
+                >
+                  <span role="cell">{directory ? <button className="file-name" onClick={() => setPath(entry.path)}>{name}</button> : <span className="file-name">{name}</span>}</span>
+                  <span role="cell">{directory ? '—' : formatBytes(entry.size)}</span>
+                  <span role="cell">{formatDate(entry.mtime)}</span>
+                  <span role="cell">
+                    {(directory || entry.type === 'file') && (
+                      <a className="download-button" aria-label={directory ? `${entry.name} als ZIP herunterladen` : `${entry.name} herunterladen`} href={downloadUrl(snapshot.id, entry.path, directory)}>
+                        {directory ? <Archive size={17} /> : <Download size={17} />}
+                      </a>
+                    )}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
+      {query.hasNextPage && (
+        <button className="ghost load-more" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>
+          {query.isFetchingNextPage ? 'Wird geladen …' : 'Weitere Einträge'}
+        </button>
+      )}
     </>
   )
 }
 
 function SettingsPage() {
+  const status = useQuery({
+    queryKey: ['system-status'],
+    queryFn: () => api<SystemStatus>('/system/status'),
+    refetchInterval: 10_000,
+  })
+  const audit = useInfiniteQuery({
+    queryKey: ['audit-events'],
+    initialPageParam: '',
+    queryFn: ({pageParam}) => {
+      const params = new URLSearchParams({limit: '50'})
+      if (pageParam) params.set('cursor', pageParam)
+      return api<Page<AuditEvent>>(`/audit-events?${params}`)
+    },
+    getNextPageParam: page => page.next_cursor,
+  })
+  const events = audit.data?.pages.flatMap(page => page.items) ?? []
+
   return (
     <main className="page">
       <div className="page-heading">
@@ -772,7 +946,53 @@ function SettingsPage() {
           <p className="muted">Sicherheitsoptionen für das lokale Administratorkonto.</p>
         </div>
       </div>
-      <PasswordForm />
+      <div className="settings-grid">
+        <PasswordForm />
+        <section className="panel">
+          <div className="section-heading">
+            <div><p className="eyebrow">BETRIEB</p><h2>Systemstatus</h2></div>
+            <Activity size={24} />
+          </div>
+          {status.isLoading && <Loading />}
+          <ErrorMessage error={status.error} />
+          {status.data && (
+            <dl className="status-grid">
+              <div><dt>Worker</dt><dd>{status.data.worker_running ? 'Aktiv' : 'Gestoppt'}</dd></div>
+              <div><dt>Jobs</dt><dd>{status.data.running_jobs} aktiv · {status.data.queued_jobs} wartend</dd></div>
+              <div><dt>Cache</dt><dd>{status.data.directory_listings} Ordner · {status.data.cached_entries} Einträge</dd></div>
+              <div><dt>Restic-Limit</dt><dd>{status.data.restic_limit} parallel</dd></div>
+              <div><dt>Bereinigung</dt><dd>{formatDate(status.data.last_cleanup_at)}</dd></div>
+              <div><dt>Fehlgeschlagen</dt><dd>{status.data.failed_jobs}</dd></div>
+            </dl>
+          )}
+        </section>
+      </div>
+      <section className="panel audit-panel">
+        <div className="section-heading">
+          <div><p className="eyebrow">SICHERHEIT</p><h2>Audit-Protokoll</h2></div>
+          <ShieldCheck size={24} />
+        </div>
+        <ErrorMessage error={audit.error} />
+        {audit.isLoading && <Loading />}
+        <div className="audit-table" role="table" aria-label="Audit-Protokoll">
+          <div className="audit-row header" role="row">
+            <span role="columnheader">Zeit</span><span role="columnheader">Aktion</span><span role="columnheader">Ergebnis</span><span role="columnheader">Ziel</span>
+          </div>
+          {events.map(event => (
+            <div className="audit-row" role="row" key={event.id}>
+              <span role="cell">{formatDate(event.created_at)}</span>
+              <span role="cell"><strong>{event.action}</strong><small>{event.user_name || 'system'}</small></span>
+              <span role="cell" className={event.result === 'success' ? 'audit-success' : 'audit-failed'}>{event.result}</span>
+              <span role="cell" title={event.path}>{event.path || event.repository_id || '—'}</span>
+            </div>
+          ))}
+        </div>
+        {audit.hasNextPage && (
+          <button className="ghost load-more" onClick={() => audit.fetchNextPage()} disabled={audit.isFetchingNextPage}>
+            {audit.isFetchingNextPage ? 'Wird geladen …' : 'Weitere Ereignisse'}
+          </button>
+        )}
+      </section>
     </main>
   )
 }

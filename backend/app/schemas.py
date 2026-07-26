@@ -76,6 +76,41 @@ class RepositoryInput(BaseModel):
     s3_session_token: SecretStr | None = None
 
 
+class RepositoryUpdateInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: RepositoryKind
+    repository_password: SecretStr | None = None
+    clear_secrets: list[
+        Literal["rest_password", "ca_certificate", "s3_session_token"]
+    ] = Field(default_factory=list)
+
+    local_path: str | None = Field(default=None, max_length=4096)
+    rest_url: str | None = Field(default=None, max_length=4096)
+    rest_username: str | None = Field(default=None, max_length=255)
+    rest_password: SecretStr | None = None
+    ca_certificate: SecretStr | None = None
+    sftp_host: str | None = Field(default=None, max_length=255)
+    sftp_port: int = Field(default=22, ge=1, le=65535)
+    sftp_username: str | None = Field(default=None, max_length=255)
+    sftp_path: str | None = Field(default=None, max_length=4096)
+    sftp_auth_method: SftpAuthMethod = "private_key"
+    sftp_private_key: SecretStr | None = None
+    sftp_password: SecretStr | None = None
+    sftp_known_hosts: SecretStr | None = None
+    sftp_fingerprint: str | None = Field(default=None, max_length=200)
+    s3_endpoint: str | None = Field(default=None, max_length=4096)
+    s3_bucket: str | None = Field(default=None, max_length=255)
+    s3_prefix: str | None = Field(default=None, max_length=2048)
+    s3_region: str | None = Field(default=None, max_length=255)
+    s3_access_key_id: SecretStr | None = None
+    s3_secret_access_key: SecretStr | None = None
+    s3_session_token: SecretStr | None = None
+
+
+class RepositoryStateInput(BaseModel):
+    enabled: bool
+
+
 class RepositorySummary(BaseModel):
     id: str
     name: str
@@ -124,6 +159,45 @@ class RefreshJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    attempt_count: int = 0
+
+
+class SnapshotPage(BaseModel):
+    items: list[SnapshotSummary]
+    next_cursor: str | None = None
+
+
+class EntryPage(BaseModel):
+    items: list[SnapshotEntry]
+    next_cursor: str | None = None
+
+
+class AuditEventOut(BaseModel):
+    id: int
+    user_name: str
+    action: str
+    result: str
+    repository_id: str | None
+    snapshot_id: str | None
+    path: str | None
+    detail: str
+    created_at: datetime
+
+
+class AuditPage(BaseModel):
+    items: list[AuditEventOut]
+    next_cursor: str | None = None
+
+
+class SystemStatusOut(BaseModel):
+    worker_running: bool
+    queued_jobs: int
+    running_jobs: int
+    failed_jobs: int
+    directory_listings: int
+    cached_entries: int
+    restic_limit: int
+    last_cleanup_at: datetime | None
 
 
 class MessageOut(BaseModel):

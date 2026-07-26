@@ -5,12 +5,16 @@ from pathlib import Path
 from backend.app.crypto import decrypt_value, encrypt_value
 from backend.app.repository_access import (
     RuntimeRepository,
+    ensure_remote_target_allowed,
     fingerprint_known_host,
     normalize_https,
     normalize_local_path,
     normalize_sftp,
+    runtime_from_update,
 )
+from backend.app.models import Repository
 from backend.app.restic import _materialize
+from backend.app.schemas import RepositoryUpdateInput
 from backend.app.security import hash_password, verify_password
 
 
@@ -27,6 +31,8 @@ def test_password_hashing_and_secret_encryption():
 
 def test_endpoint_and_local_path_validation(test_root):
     assert normalize_https("https://EXAMPLE.test:443/repo//path", "URL") == "https://example.test/repo/path"
+    assert normalize_https("https://192.0.2.10/repo", "URL") == "https://192.0.2.10/repo"
+    assert normalize_https("https://[2001:db8::1]/repo", "URL") == "https://[2001:db8::1]/repo"
     assert normalize_local_path("server-a").startswith((test_root / "repositories").as_posix())
 
     for invalid in (
@@ -115,3 +121,64 @@ def test_entrypoint_does_not_recursively_chown_private_restic_cache():
     assert "chown -R rrb:rrb /data\n" not in entrypoint
     assert "chown rrb:rrb /data /data/cache" in entrypoint
     assert "chown -R rrb:rrb /data/security" in entrypoint
+
+
+async def test_remote_target_allowlist():
+    from backend.app.config import get_settings
+
+    settings = get_settings()
+    original = settings.allowed_remote_targets
+    try:
+        settings.allowed_remote_targets = "backup.example,10.20.0.0/16"
+        await ensure_remote_target_allowed("backup.example")
+        await ensure_remote_target_allowed("10.20.4.8")
+        try:
+            await ensure_remote_target_allowed("192.0.2.10")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Nicht erlaubte Adresse wurde akzeptiert")
+    finally:
+        settings.allowed_remote_targets = original
+
+
+def test_sftp_host_change_requires_new_confirmed_key():
+    known_host = (
+        "backup.example ssh-ed25519 "
+        "AAAAC3NzaC1lZDI1NTE5AAAAIEg5Q2p2cm93c2VyVGVzdEtleU1hdGVyaWFs"
+    )
+    repository = Repository(
+        id="repository",
+        name="SFTP",
+        kind="sftp",
+        location="sftp://user@backup.example:22//srv/restic",
+        config_json=(
+            '{"host":"backup.example","port":22,"username":"user",'
+            '"path":"/srv/restic","auth_method":"private_key",'
+            f'"fingerprint":"{fingerprint_known_host(known_host)}"}}'
+        ),
+    )
+    secrets = {
+        "repository_password": "repository-password",
+        "sftp_private_key": "private-key",
+        "sftp_known_hosts": known_host,
+    }
+    unchanged = RepositoryUpdateInput(
+        name="SFTP",
+        kind="sftp",
+        sftp_host="backup.example",
+        sftp_port=22,
+        sftp_username="user",
+        sftp_path="/srv/restic",
+    )
+    assert runtime_from_update(unchanged, repository, secrets).secrets[
+        "sftp_known_hosts"
+    ] == known_host
+
+    changed = unchanged.model_copy(update={"sftp_host": "new.example"})
+    try:
+        runtime_from_update(changed, repository, secrets)
+    except ValueError as exc:
+        assert "Hostschlüssel" in str(exc)
+    else:
+        raise AssertionError("Hostwechsel ohne neuen Hostschlüssel wurde akzeptiert")

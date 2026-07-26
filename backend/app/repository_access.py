@@ -5,12 +5,14 @@ import hashlib
 import ipaddress
 import json
 import re
+import socket
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from .config import get_settings
-from .schemas import RepositoryInput
+from .schemas import RepositoryInput, RepositoryUpdateInput
 
 
 @dataclass
@@ -54,13 +56,58 @@ def normalize_https(value: str, label: str) -> str:
         raise ValueError(f"{label} darf keine Zugangsdaten, Query oder Fragment enthalten")
     host = parsed.hostname.lower()
     try:
-        host = f"[{ipaddress.ip_address(host).compressed}]"
+        address = ipaddress.ip_address(host)
+        host = f"[{address.compressed}]" if address.version == 6 else address.compressed
     except ValueError:
         pass
     port = parsed.port
     netloc = host if not port or port == 443 else f"{host}:{port}"
     path = re.sub(r"/{2,}", "/", parsed.path or "/")
     return urlunsplit(("https", netloc, path, "", ""))
+
+
+def _allowed_target_rules() -> tuple[set[str], list[ipaddress.IPv4Network | ipaddress.IPv6Network]]:
+    hosts: set[str] = set()
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for raw in get_settings().allowed_remote_targets.split(","):
+        value = raw.strip().lower()
+        if not value:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            hosts.add(value.rstrip("."))
+    return hosts, networks
+
+
+async def ensure_remote_target_allowed(host: str) -> None:
+    hosts, networks = _allowed_target_rules()
+    if not hosts and not networks:
+        return
+    normalized = host.strip().lower().rstrip(".")
+    if normalized in hosts:
+        return
+    try:
+        addresses = {ipaddress.ip_address(normalized)}
+    except ValueError:
+        try:
+            values = await asyncio.to_thread(socket.getaddrinfo, normalized, None)
+        except socket.gaierror as exc:
+            raise ValueError("Remote-Ziel konnte für die Allowlist nicht aufgelöst werden") from exc
+        addresses = {ipaddress.ip_address(item[4][0]) for item in values}
+    if not addresses or not all(any(address in network for network in networks) for address in addresses):
+        raise ValueError("Remote-Ziel ist nicht durch RRB_ALLOWED_REMOTE_TARGETS erlaubt")
+
+
+async def ensure_runtime_target_allowed(repository: RuntimeRepository) -> None:
+    if repository.kind == "local":
+        return
+    if repository.kind == "sftp":
+        host = str(repository.config.get("host") or "")
+    else:
+        key = "url" if repository.kind == "rest" else "endpoint"
+        host = urlsplit(str(repository.config.get(key) or "")).hostname or ""
+    await ensure_remote_target_allowed(host)
 
 
 def normalize_sftp(host: str, port: int, username: str, path: str) -> tuple[str, dict]:
@@ -110,7 +157,7 @@ def runtime_from_input(data: RepositoryInput, repository_id: str) -> RuntimeRepo
             raise ValueError("REST-URL fehlt")
         endpoint = normalize_https(data.rest_url, "REST-URL")
         location = f"rest:{endpoint}"
-        config = {"url": endpoint}
+        config = {"url": endpoint, "username": data.rest_username or ""}
         if data.rest_username:
             secrets["rest_username"] = data.rest_username
         if value := _secret(data.rest_password):
@@ -186,6 +233,65 @@ def runtime_from_input(data: RepositoryInput, repository_id: str) -> RuntimeRepo
         config=config,
         secrets=secrets,
     )
+
+
+def runtime_from_update(
+    data: RepositoryUpdateInput,
+    repository,
+    existing_secrets: dict[str, str],
+) -> RuntimeRepository:
+    payload = data.model_dump(exclude={"clear_secrets"})
+    secret_fields = {
+        "repository_password",
+        "rest_password",
+        "ca_certificate",
+        "sftp_private_key",
+        "sftp_password",
+        "sftp_known_hosts",
+        "s3_access_key_id",
+        "s3_secret_access_key",
+        "s3_session_token",
+    }
+    same_kind = data.kind == repository.kind
+    retained = {"repository_password"}
+    if same_kind:
+        retained.update(
+            {
+                "rest_password",
+                "ca_certificate",
+                "sftp_private_key",
+                "sftp_password",
+                "sftp_known_hosts",
+                "s3_access_key_id",
+                "s3_secret_access_key",
+                "s3_session_token",
+            }
+        )
+    for field in secret_fields:
+        value = payload.get(field)
+        raw = value.get_secret_value() if value is not None else ""
+        if raw:
+            continue
+        payload[field] = existing_secrets.get(field) if field in retained else None
+    for field in data.clear_secrets:
+        payload[field] = None
+
+    old_config = json.loads(repository.config_json or "{}")
+    if same_kind and data.kind == "sftp":
+        host_unchanged = (
+            str(data.sftp_host or "").lower() == str(old_config.get("host") or "").lower()
+            and data.sftp_port == int(old_config.get("port") or 22)
+        )
+        if host_unchanged and not payload.get("sftp_known_hosts"):
+            payload["sftp_known_hosts"] = existing_secrets.get("sftp_known_hosts")
+        if host_unchanged and not data.sftp_fingerprint:
+            payload["sftp_fingerprint"] = old_config.get("fingerprint")
+        if not host_unchanged and not _secret(data.sftp_known_hosts):
+            payload["sftp_known_hosts"] = None
+            payload["sftp_fingerprint"] = data.sftp_fingerprint
+
+    create_data = RepositoryInput.model_validate(payload)
+    return runtime_from_input(create_data, repository.id)
 
 
 def runtime_from_model(repository, secrets: dict[str, str]) -> RuntimeRepository:

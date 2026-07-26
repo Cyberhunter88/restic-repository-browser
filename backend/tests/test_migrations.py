@@ -43,3 +43,19 @@ def test_sftp_url_migration_repairs_existing_repository(tmp_path):
             )
         )
     assert location == "sftp://backup@nas.example:22//srv/restic"
+    inspector = sa.inspect(engine)
+    assert {"directory_listings", "cached_entries", "audit_events"}.issubset(
+        set(inspector.get_table_names())
+    )
+    refresh_columns = {column["name"] for column in inspector.get_columns("refresh_jobs")}
+    assert {
+        "requested_by",
+        "active_key",
+        "attempt_count",
+        "lease_expires_at",
+        "heartbeat_at",
+    }.issubset(refresh_columns)
+
+    command.downgrade(config, "0002_fix_sftp_urls")
+    assert "audit_events" not in sa.inspect(engine).get_table_names()
+    command.upgrade(config, "head")

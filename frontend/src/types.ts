@@ -53,6 +53,7 @@ export interface RefreshJob {
   created_at: string
   started_at?: string
   finished_at?: string
+  attempt_count: number
 }
 
 export interface SftpHostKey {
@@ -61,3 +62,30 @@ export interface SftpHostKey {
   known_hosts: string
 }
 
+export interface Page<T> {
+  items: T[]
+  next_cursor?: string
+}
+
+export interface AuditEvent {
+  id: number
+  user_name: string
+  action: string
+  result: string
+  repository_id?: string
+  snapshot_id?: string
+  path?: string
+  detail: string
+  created_at: string
+}
+
+export interface SystemStatus {
+  worker_running: boolean
+  queued_jobs: number
+  running_jobs: number
+  failed_jobs: number
+  directory_listings: number
+  cached_entries: number
+  restic_limit: number
+  last_cleanup_at?: string
+}

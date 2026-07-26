@@ -16,10 +16,12 @@ Serverpfade an. Alle Leseoperationen verwenden `--no-lock`.
 - SFTP mit privatem Schlüssel oder Benutzername/Passwort und bestätigtem SSH-Hostschlüssel
 - Amazon S3 und S3-kompatible HTTPS-Endpunkte
 - Snapshot-Cache mit automatischer und manueller Aktualisierung
+- neustartfeste Aktualisierungsjobs und paginierter Verzeichnis-Cache
 - Dateibrowser mit Breadcrumbs, Metadaten, Host- und Tag-Filtern
 - Originaldownload einzelner Dateien und gestreamte Ordner-ZIPs
 - ein lokales Administratorkonto mit Argon2id-Passwort
 - AES-256-GCM-verschlüsselte Repository-Zugangsdaten
+- lokales Audit-Protokoll, Systemstatus und optionale Ziel-Allowlist
 - Docker-Images für AMD64 und ARM64
 
 ## Schnellstart
@@ -113,6 +115,19 @@ Der Browser benötigt Leserechte für die Repository-Daten. Da `--no-lock`
 verwendet wird, schreibt er keine Lockdateien. Während `prune` oder anderer
 destruktiver Wartung können Lesevorgänge fehlschlagen; sie sollten danach
 wiederholt werden.
+
+### Optionale Netzwerk-Allowlist
+
+Mit `RRB_ALLOWED_REMOTE_TARGETS` können entfernte REST-, S3- und SFTP-Ziele
+auf exakte Hostnamen, IP-Adressen oder CIDR-Netze begrenzt werden:
+
+```env
+RRB_ALLOWED_REMOTE_TARGETS=backup.example,10.20.0.0/16,2001:db8:42::/48
+```
+
+Ein leerer Wert erhält das bisherige Verhalten. Die Prüfung ist eine
+zusätzliche Schutzschicht; eine Egress-Firewall am Container oder Docker-Host
+bleibt die verbindliche Grenze gegen DNS-Rebinding und HTTP-Weiterleitungen.
 
 ## Lokaler Build
 

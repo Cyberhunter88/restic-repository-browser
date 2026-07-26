@@ -33,7 +33,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return response.json()
 }
 
-export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown) {
+export function mutate<T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown) {
   return api<T>(path, {
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -58,4 +58,3 @@ export function downloadUrl(snapshotId: string, path: string, zip = false): stri
   if (zip) query.set('archive', 'zip')
   return `/api/snapshots/${snapshotId}/download?${query.toString()}`
 }
-
