@@ -95,9 +95,13 @@ def test_sftp_password_is_materialized_without_command_line_secret(tmp_path):
     assert password not in repr(options)
     assert password not in repr(env)
     assert (tmp_path / "sftp-password").read_text(encoding="utf-8") == password
-    assert password not in (tmp_path / "sftp-askpass").read_text(encoding="utf-8")
-    assert env["SSH_ASKPASS"] == str(tmp_path / "sftp-askpass")
+    assert not (tmp_path / "sftp-askpass").exists()
+    assert env["SSH_ASKPASS"] == "/usr/local/bin/sftp-askpass.sh"
     assert "PubkeyAuthentication=no" in options[-1]
+    assert "-o ConnectTimeout=10" in options[-1]
+    assert "-o ConnectionAttempts=1" in options[-1]
+    assert "-o ServerAliveInterval=10" in options[-1]
+    assert "-o ServerAliveCountMax=1" in options[-1]
     assert options[-1].startswith("sftp.command=ssh ")
     assert "-p 2222 -l backup-user -s backup.example sftp" in options[-1]
     assert "," not in options[-1]

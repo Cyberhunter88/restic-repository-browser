@@ -40,11 +40,13 @@ RUN pip install --no-cache-dir --no-compile . \
     && find /usr/local/lib/python3.12 -type d -name __pycache__ -prune -exec rm -rf '{}' +
 COPY --from=frontend /src/frontend/dist ./frontend/dist
 COPY --from=restic /restic /usr/local/bin/restic
-COPY scripts/entrypoint.sh scripts/healthcheck.py /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.py \
+COPY scripts/entrypoint.sh scripts/healthcheck.py scripts/sftp-askpass.sh /usr/local/bin/
+RUN chmod 0755 \
+        /usr/local/bin/entrypoint.sh \
+        /usr/local/bin/healthcheck.py \
+        /usr/local/bin/sftp-askpass.sh \
     && useradd --uid 1000 --create-home --home-dir /home/rrb rrb
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
     CMD ["python", "/usr/local/bin/healthcheck.py"]
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-

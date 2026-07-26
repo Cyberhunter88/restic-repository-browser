@@ -15,6 +15,11 @@ from .config import get_settings
 from .repository_access import RuntimeRepository
 
 
+SFTP_ASKPASS_PATH = "/usr/local/bin/sftp-askpass.sh"
+SFTP_CONNECT_TIMEOUT_SECONDS = 10
+PROCESS_TERMINATION_GRACE_SECONDS = 5
+
+
 @dataclass
 class CommandResult:
     returncode: int
@@ -72,7 +77,11 @@ def _materialize(
         known_hosts_path.chmod(0o600)
         host_key_options = (
             f"-o UserKnownHostsFile={shlex.quote(str(known_hosts_path))} "
-            "-o StrictHostKeyChecking=yes"
+            "-o StrictHostKeyChecking=yes "
+            f"-o ConnectTimeout={SFTP_CONNECT_TIMEOUT_SECONDS} "
+            "-o ConnectionAttempts=1 "
+            "-o ServerAliveInterval=10 "
+            "-o ServerAliveCountMax=1"
         )
         ssh_target = (
             f"-p {int(repository.config['port'])} "
@@ -81,18 +90,12 @@ def _materialize(
         )
         if repository.config.get("auth_method", "private_key") == "password":
             sftp_password_path = directory / "sftp-password"
-            askpass_path = directory / "sftp-askpass"
             sftp_password_path.write_text(secrets["sftp_password"], encoding="utf-8")
-            askpass_path.write_text(
-                '#!/bin/sh\nexec cat -- "$RRB_SFTP_PASSWORD_FILE"\n',
-                encoding="utf-8",
-            )
             sftp_password_path.chmod(0o600)
-            askpass_path.chmod(0o700)
             env.update(
                 {
                     "RRB_SFTP_PASSWORD_FILE": str(sftp_password_path),
-                    "SSH_ASKPASS": str(askpass_path),
+                    "SSH_ASKPASS": SFTP_ASKPASS_PATH,
                     "SSH_ASKPASS_REQUIRE": "force",
                     "DISPLAY": "rrb:0",
                 }
@@ -121,6 +124,32 @@ def _materialize(
     return env, options
 
 
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=PROCESS_TERMINATION_GRACE_SECONDS,
+        )
+    except TimeoutError:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            return
+        await process.wait()
+
+
 async def run_command(
     repository: RuntimeRepository,
     arguments: list[str],
@@ -142,11 +171,7 @@ async def run_command(
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except TimeoutError:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGTERM)
-            else:
-                process.terminate()
-            await process.wait()
+            await _terminate_process(process)
             raise RuntimeError("Restic-Aufruf hat das Zeitlimit überschritten")
         return CommandResult(
             process.returncode,
@@ -155,8 +180,16 @@ async def run_command(
         )
 
 
-async def list_snapshots(repository: RuntimeRepository) -> list[dict]:
-    result = await run_command(repository, ["snapshots", "--json", "--no-lock"])
+async def list_snapshots(
+    repository: RuntimeRepository,
+    *,
+    timeout: int = 300,
+) -> list[dict]:
+    result = await run_command(
+        repository,
+        ["snapshots", "--json", "--no-lock"],
+        timeout=timeout,
+    )
     if result.returncode != 0:
         raise RuntimeError(result.stderr or "Snapshots konnten nicht gelesen werden")
     try:

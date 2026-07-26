@@ -57,6 +57,8 @@ from .security import (
 )
 
 
+REPOSITORY_VALIDATION_TIMEOUT_SECONDS = 30
+
 settings = get_settings()
 restic_semaphore = asyncio.Semaphore(settings.max_parallel_restic)
 
@@ -362,7 +364,10 @@ def repositories(db: Session = Depends(get_db), _user: User = Depends(current_us
 
 async def validate_runtime(runtime) -> list[dict]:
     async with restic_semaphore:
-        return await list_snapshots(runtime)
+        return await list_snapshots(
+            runtime,
+            timeout=REPOSITORY_VALIDATION_TIMEOUT_SECONDS,
+        )
 
 
 @app.post("/api/repositories", response_model=RepositorySummary, status_code=201)

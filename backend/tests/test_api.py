@@ -14,6 +14,18 @@ from backend.app.repository_access import fingerprint_known_host
 MUTATION_HEADERS = {"X-RRB-Request": "1"}
 
 
+async def test_repository_validation_uses_short_timeout(monkeypatch):
+    runtime = object()
+    list_snapshots = AsyncMock(return_value=[])
+    monkeypatch.setattr(main, "list_snapshots", list_snapshots)
+
+    assert await main.validate_runtime(runtime) == []
+    list_snapshots.assert_awaited_once_with(
+        runtime,
+        timeout=30,
+    )
+
+
 def test_login_requires_application_header(client):
     response = client.post(
         "/api/auth/login",
