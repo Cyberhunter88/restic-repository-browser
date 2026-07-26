@@ -1,0 +1,7 @@
+services:
+  browser:
+    volumes:
+      # Die SMB-Freigabe zuerst auf dem Docker-Host nach /mnt/restic-nas mounten.
+      # In der Weboberfläche anschließend "nas" als lokalen Pfad eintragen.
+      - /mnt/restic-nas:/repositories/nas:ro
+

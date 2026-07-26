@@ -1,0 +1,10 @@
+services:
+  browser:
+    environment:
+      RRB_TLS_MODE: files
+      RRB_TLS_CERT_FILE: /tls/server.crt
+      RRB_TLS_KEY_FILE: /tls/server.key
+    volumes:
+      - ${RRB_TLS_CERT_HOST_PATH:?Zertifikatspfad setzen}:/tls/server.crt:ro
+      - ${RRB_TLS_KEY_HOST_PATH:?Schlüsselpfad setzen}:/tls/server.key:ro
+

@@ -1,0 +1,7 @@
+services:
+  browser:
+    build:
+      context: .
+      target: runtime
+    image: restic-repository-browser:local
+

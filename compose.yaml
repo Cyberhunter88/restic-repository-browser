@@ -1,0 +1,28 @@
+name: restic-repository-browser
+
+services:
+  browser:
+    image: ${RRB_IMAGE:-ghcr.io/cyberhunter88/restic-repository-browser:latest}
+    container_name: restic-repository-browser
+    restart: unless-stopped
+    environment:
+      RRB_INITIAL_ADMIN_PASSWORD: ${RRB_INITIAL_ADMIN_PASSWORD:?In .env setzen}
+      RRB_HTTP_PORT: "8080"
+      RRB_TLS_MODE: proxy
+      RRB_TRUSTED_PROXY_IPS: ${RRB_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+    ports:
+      - "${RRB_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+      - ./repositories:/repositories:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    pids_limit: 128
+

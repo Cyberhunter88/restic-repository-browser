@@ -1,0 +1,168 @@
+name: Test and publish container
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12.11"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Install restic 0.19.1
+        run: |
+          set -eu
+          asset=restic_0.19.1_linux_amd64.bz2
+          curl --proto '=https' --tlsv1.2 -fsSLO "https://github.com/restic/restic/releases/download/v0.19.1/$asset"
+          curl --proto '=https' --tlsv1.2 -fsSLO "https://github.com/restic/restic/releases/download/v0.19.1/SHA256SUMS"
+          grep " $asset$" SHA256SUMS | sha256sum -c -
+          bzip2 -d "$asset"
+          sudo install -m 0755 "${asset%.bz2}" /usr/local/bin/restic
+      - name: Check backend
+        run: |
+          python -m ruff check backend
+          python -m pytest -q
+      - name: Validate Compose configuration
+        env:
+          RRB_INITIAL_ADMIN_PASSWORD: ci-configuration-password
+        run: docker compose config >/dev/null
+      - uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24.14.1"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: |
+          pnpm test
+          pnpm build
+        working-directory: frontend
+
+  build:
+    if: github.event_name != 'pull_request'
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/cyberhunter88/restic-repository-browser
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.2.0
+      - uses: docker/login-action@v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+      - id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=runtime-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.architecture }}
+          provenance: mode=max
+          sbom: true
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: digests-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/cyberhunter88/restic-repository-browser
+    steps:
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4.2.0
+      - uses: docker/login-action@v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=tag
+      - name: Create multi-architecture manifest
+        env:
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          tag_args=()
+          while IFS= read -r tag; do
+            test -n "$tag" && tag_args+=("-t" "$tag")
+          done <<< "$PUBLISHED_TAGS"
+          digest_args=()
+          for digest in "${RUNNER_TEMP}"/digests/*; do
+            digest_args+=("${IMAGE_NAME}@sha256:$(basename "$digest")")
+          done
+          test "${#tag_args[@]}" -gt 0
+          test "${#digest_args[@]}" -eq 2
+          docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
+      - name: Verify platforms
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+        run: |
+          set -eu
+          index="$(docker buildx imagetools inspect "$IMAGE_REF" --raw)"
+          for arch in amd64 arm64; do
+            test "$(printf '%s' "$index" | jq --arg arch "$arch" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch)] | length')" -eq 1
+          done
