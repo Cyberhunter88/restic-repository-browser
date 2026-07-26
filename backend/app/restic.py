@@ -76,8 +76,8 @@ def _materialize(
         )
         ssh_target = (
             f"-p {int(repository.config['port'])} "
-            f"-l {shlex.quote(str(repository.config['username']))} -- "
-            f"{shlex.quote(str(repository.config['host']))} -s sftp"
+            f"-l {shlex.quote(str(repository.config['username']))} -s "
+            f"{shlex.quote(str(repository.config['host']))} sftp"
         )
         if repository.config.get("auth_method", "private_key") == "password":
             sftp_password_path = directory / "sftp-password"
@@ -99,7 +99,6 @@ def _materialize(
             )
             ssh_args = (
                 f"{host_key_options} -o PubkeyAuthentication=no "
-                "-o PreferredAuthentications=password,keyboard-interactive "
                 "-o NumberOfPasswordPrompts=1"
             )
         else:
